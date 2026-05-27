@@ -4,7 +4,9 @@
 # Pipeline 2: Investment interpretation generation using rule-based templates
 
 import streamlit as st
-from transformers import pipeline
+import pandas as pd
+import torch
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
 
 # --------------------------------------------------
@@ -31,11 +33,12 @@ def load_sentiment_model():
     Output labels:
     POSITIVE / NEUTRAL / NEGATIVE
     """
-    classifier = pipeline(
-        "text-classification",
-        model="Xinn94L/fiqa-financial-sentiment-distilbert"
-    )
-    return classifier
+    model_name = "Xinn94L/fiqa-financial-sentiment-distilbert"
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForSequenceClassification.from_pretrained(model_name)
+
+    return tokenizer, model
 
 
 # --------------------------------------------------
@@ -55,7 +58,7 @@ def classify_financial_sentiment(headline, target, aspect):
         score: confidence score
         model_input: formatted input text used by the model
     """
-    classifier = load_sentiment_model()
+    tokenizer, model = load_sentiment_model()
 
     model_input = (
         f"Headline: {headline} "
@@ -63,10 +66,28 @@ def classify_financial_sentiment(headline, target, aspect):
         f"Aspect: {aspect}"
     )
 
-    result = classifier(model_input)[0]
+    inputs = tokenizer(
+        model_input,
+        truncation=True,
+        padding=True,
+        max_length=128,
+        return_tensors="pt"
+    )
 
-    label = result["label"]
-    score = result["score"]
+    # DistilBERT does not use token_type_ids.
+    # Some tokenizers may return token_type_ids, so we remove it to avoid TypeError.
+    if "token_type_ids" in inputs:
+        inputs.pop("token_type_ids")
+
+    model.eval()
+
+    with torch.no_grad():
+        outputs = model(**inputs)
+        probabilities = torch.softmax(outputs.logits, dim=-1)
+        predicted_id = torch.argmax(probabilities, dim=-1).item()
+        score = probabilities[0][predicted_id].item()
+
+    label = model.config.id2label[predicted_id]
 
     return label, score, model_input
 
@@ -294,7 +315,12 @@ if analyze_button:
             "Confidence Score": f"{score:.2%}"
         }
 
-        st.table(result_summary)
+        summary_df = pd.DataFrame(
+            list(result_summary.items()),
+            columns=["Field", "Value"]
+        )
+
+        st.table(summary_df)
 
         st.caption(
             "Disclaimer: This app is for educational and demonstration purposes only. "
